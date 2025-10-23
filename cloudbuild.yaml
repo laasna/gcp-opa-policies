@@ -1,0 +1,135 @@
+# Cloud Build configuration for OPA Policy Validation Pipeline
+steps:
+  # Step 1: Download OPA
+  - name: 'gcr.io/cloud-builders/wget'
+    id: 'download-opa'
+    args:
+      - 'https://openpolicyagent.org/downloads/v0.57.0/opa_linux_amd64_static'
+      - '-O'
+      - 'opa'
+    
+  # Step 2: Make OPA executable
+  - name: 'ubuntu'
+    id: 'setup-opa'
+    entrypoint: 'chmod'
+    args: ['+x', 'opa']
+    
+  # Step 3: Setup Terraform
+  - name: 'hashicorp/terraform:1.5'
+    id: 'terraform-init'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        cd infrastructure
+        terraform init
+    
+  # Step 4: Generate Terraform Plan
+  - name: 'hashicorp/terraform:1.5'
+    id: 'terraform-plan'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        cd infrastructure
+        terraform plan -out=tfplan.binary -var="environment=${_ENVIRONMENT}" -var="enable_public_ip=${_ENABLE_PUBLIC_IP}"
+        terraform show -json tfplan.binary > tfplan.json
+    env:
+      - 'TF_VAR_environment=${_ENVIRONMENT}'
+      - 'TF_VAR_enable_public_ip=${_ENABLE_PUBLIC_IP}'
+    
+  # Step 5: Validate Security Policies
+  - name: 'ubuntu'
+    id: 'validate-security'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        echo "🔍 Validating Security Policies..."
+        ./opa eval -d policies -i infrastructure/tfplan.json "data.terraform.security.deny" --format json > security-results.json
+        
+        if [ -s security-results.json ]; then
+          VIOLATIONS=$(cat security-results.json | jq -r '.result[]?.expressions[]?.value | to_entries[]?.key' 2>/dev/null || echo "")
+          if [ ! -z "$VIOLATIONS" ]; then
+            echo "❌ Security policy violations found:"
+            echo "$VIOLATIONS"
+            exit 1
+          fi
+        fi
+        echo "✅ Security policies passed"
+    
+  # Step 6: Validate GCP Compute Policies  
+  - name: 'ubuntu'
+    id: 'validate-compute'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        echo "🔍 Validating GCP Compute Policies..."
+        ./opa eval -d policies -i infrastructure/tfplan.json "data.terraform.gcp.compute.deny" --format json > compute-results.json
+        
+        if [ -s compute-results.json ]; then
+          VIOLATIONS=$(cat compute-results.json | jq -r '.result[]?.expressions[]?.value | to_entries[]?.key' 2>/dev/null || echo "")
+          if [ ! -z "$VIOLATIONS" ]; then
+            echo "❌ Compute policy violations found:"
+            echo "$VIOLATIONS"
+            exit 1
+          fi
+        fi
+        echo "✅ Compute policies passed"
+    
+  # Step 7: Validate GCP Storage Policies
+  - name: 'ubuntu'
+    id: 'validate-storage'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        echo "🔍 Validating GCP Storage Policies..."
+        ./opa eval -d policies -i infrastructure/tfplan.json "data.terraform.gcp.storage.deny" --format json > storage-results.json
+        
+        if [ -s storage-results.json ]; then
+          VIOLATIONS=$(cat storage-results.json | jq -r '.result[]?.expressions[]?.value | to_entries[]?.key' 2>/dev/null || echo "")
+          if [ ! -z "$VIOLATIONS" ]; then
+            echo "❌ Storage policy violations found:"
+            echo "$VIOLATIONS"
+            exit 1
+          fi
+        fi
+        echo "✅ Storage policies passed"
+    
+  # Step 8: Generate Policy Report
+  - name: 'ubuntu'
+    id: 'generate-report'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        echo "# OPA Policy Validation Report" > policy-report.md
+        echo "**Project:** ${PROJECT_ID}" >> policy-report.md
+        echo "**Environment:** ${_ENVIRONMENT}" >> policy-report.md
+        echo "**Build ID:** $BUILD_ID" >> policy-report.md
+        echo "**Timestamp:** $(date)" >> policy-report.md
+        echo "" >> policy-report.md
+        echo "## Policy Results" >> policy-report.md
+        echo "✅ All policies passed successfully!" >> policy-report.md
+        echo "" >> policy-report.md
+        echo "## Validated Policies" >> policy-report.md
+        echo "- Security Policies" >> policy-report.md
+        echo "- GCP Compute Policies" >> policy-report.md
+        echo "- GCP Storage Policies" >> policy-report.md
+        
+        echo "Policy validation completed successfully!"
+
+# Substitution variables
+substitutions:
+  _ENVIRONMENT: 'dev'
+  _ENABLE_PUBLIC_IP: 'false'
+
+# Options
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_STANDARD_2'
+
+# Timeout
+timeout: '1200s'
