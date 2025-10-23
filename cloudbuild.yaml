@@ -98,7 +98,47 @@ steps:
         fi
         echo "✅ Storage policies passed"
     
-  # Step 8: Generate Policy Report
+  # Step 8: Validate GCP Network Policies
+  - name: 'ubuntu'
+    id: 'validate-network'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        echo "🔍 Validating GCP Network Policies..."
+        ./opa eval -d policies -i infrastructure/tfplan.json "data.terraform.gcp.network.deny" --format json > network-results.json
+        
+        if [ -s network-results.json ]; then
+          VIOLATIONS=$(cat network-results.json | jq -r '.result[]?.expressions[]?.value | to_entries[]?.key' 2>/dev/null || echo "")
+          if [ ! -z "$VIOLATIONS" ]; then
+            echo "❌ Network policy violations found:"
+            echo "$VIOLATIONS"
+            exit 1
+          fi
+        fi
+        echo "✅ Network policies passed"
+    
+  # Step 9: Validate GCP IAM Policies
+  - name: 'ubuntu'
+    id: 'validate-iam'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        echo "🔍 Validating GCP IAM Policies..."
+        ./opa eval -d policies -i infrastructure/tfplan.json "data.terraform.gcp.iam.deny" --format json > iam-results.json
+        
+        if [ -s iam-results.json ]; then
+          VIOLATIONS=$(cat iam-results.json | jq -r '.result[]?.expressions[]?.value | to_entries[]?.key' 2>/dev/null || echo "")
+          if [ ! -z "$VIOLATIONS" ]; then
+            echo "❌ IAM policy violations found:"
+            echo "$VIOLATIONS"
+            exit 1
+          fi
+        fi
+        echo "✅ IAM policies passed"
+    
+  # Step 10: Generate Policy Report
   - name: 'ubuntu'
     id: 'generate-report'
     entrypoint: 'sh'
@@ -118,6 +158,8 @@ steps:
         echo "- Security Policies" >> policy-report.md
         echo "- GCP Compute Policies" >> policy-report.md
         echo "- GCP Storage Policies" >> policy-report.md
+        echo "- GCP Network Policies" >> policy-report.md
+        echo "- GCP IAM Policies" >> policy-report.md
         
         echo "Policy validation completed successfully!"
 
